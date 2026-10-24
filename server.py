@@ -4,14 +4,14 @@ import os, json, time, hmac, hashlib, sqlite3, threading, uuid, base64, re, urll
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-ROOT = Path(__file__).parent; UP = ROOT / 'uploads'; UP.mkdir(exist_ok=True)
-TOKEN = os.getenv('BOT_TOKEN', ''); URL = os.getenv('WEBAPP_URL', '').rstrip('/')
+ROOT = Path(__file__).parent; DATA = Path(os.getenv('DATA_DIR') or ROOT); DATA.mkdir(parents=True, exist_ok=True); UP = DATA / 'uploads'; UP.mkdir(exist_ok=True)
+TOKEN = os.getenv('BOT_TOKEN', ''); URL = (os.getenv('WEBAPP_URL') or os.getenv('RENDER_EXTERNAL_URL') or '').rstrip('/')
 ADMINS = {int(x) for x in re.split(r'[,\s]+', os.getenv('ADMIN_IDS', '')) if x.isdigit()}
 PORT = int(os.getenv('PORT', '8080')); DEV = os.getenv('DEV') == '1'
 RS = {'new': 'Новая', 'work': 'В работе', 'done': 'Выполнена', 'rejected': 'Отклонена'}
 OS = {'new': 'Новый', 'work': 'В работе', 'shipped': 'Отправлен', 'done': 'Завершён', 'cancel': 'Отменён'}
 
-db = sqlite3.connect(ROOT / 'shop.db', check_same_thread=False); db.row_factory = sqlite3.Row; LK = threading.Lock()
+db = sqlite3.connect(DATA / 'shop.db', check_same_thread=False); db.row_factory = sqlite3.Row; LK = threading.Lock()
 db.executescript('''
 create table if not exists products(id integer primary key autoincrement,title,brand,category,price integer default 0,descr,photo,active integer default 1);
 create table if not exists requests(id integer primary key autoincrement,uid integer,uname,name,text,photo,status default 'new',reply default '',ts integer);
