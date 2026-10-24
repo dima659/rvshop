@@ -4,7 +4,12 @@ import os, json, time, hmac, hashlib, sqlite3, threading, uuid, base64, re, urll
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
-ROOT = Path(__file__).parent; DATA = Path(os.getenv('DATA_DIR') or ROOT); DATA.mkdir(parents=True, exist_ok=True); UP = DATA / 'uploads'; UP.mkdir(exist_ok=True)
+ROOT = Path(__file__).parent; DATA = Path(os.getenv('DATA_DIR') or ROOT)
+try: DATA.mkdir(parents=True, exist_ok=True); (DATA / '.w').write_text('1')
+except OSError:
+    print(f'ВНИМАНИЕ: нет доступа к {DATA}. Данные пишутся в {ROOT / "data"} и пропадут при перезапуске. Подключите диск в Render.')
+    DATA = ROOT / 'data'; DATA.mkdir(exist_ok=True)
+UP = DATA / 'uploads'; UP.mkdir(exist_ok=True)
 TOKEN = os.getenv('BOT_TOKEN', ''); URL = (os.getenv('WEBAPP_URL') or os.getenv('RENDER_EXTERNAL_URL') or '').rstrip('/')
 ADMINS = {int(x) for x in re.split(r'[,\s]+', os.getenv('ADMIN_IDS', '')) if x.isdigit()}
 PORT = int(os.getenv('PORT', '8080')); DEV = os.getenv('DEV') == '1'
