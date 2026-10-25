@@ -10,7 +10,7 @@ ADMINS = {int(x) for x in re.split(r'[,\s]+', os.getenv('ADMIN_IDS', '')) if x.i
 PORT = int(os.getenv('PORT', '8080')); DEV = os.getenv('DEV') == '1'
 DBURL = os.getenv('DATABASE_URL', ''); PG = DBURL.startswith('postgres')
 SECRET = hashlib.sha256(TOKEN.encode()).hexdigest()[:32]
-LIVE_CH = '@Ravoutshmotlive'; _subs = {}
+LIVE_CH = '@Ravoutshmotlive'; _subs = {}; CHECK_ADMINS = os.getenv('CHECK_ADMINS') == '1'
 RS = {'new': 'Новая', 'work': 'В работе', 'done': 'Выполнена', 'rejected': 'Отклонена'}
 OS = {'new': 'Новый', 'work': 'В работе', 'shipped': 'Отправлен', 'done': 'Завершён', 'cancel': 'Отменён'}
 
@@ -39,17 +39,20 @@ def rows(sql, *a):
     with LK: return [dict(r) for r in ex(sql, a).fetchall()]
 def run(sql, *a):
     with LK:
-        ins = sql.lstrip().lower().startswith('insert into') and not sql.lstrip().lower().startswith('insert into images')
+        l = sql.lstrip().lower(); ins = l.startswith('insert into') and not l.startswith(('insert into images', 'insert into meta'))
         cur = ex(sql + (' returning id' if PG and ins else ''), a)
         return (cur.fetchone()['id'] if ins else None) if PG else cur.lastrowid
 PK = 'bigserial primary key' if PG else 'integer primary key autoincrement'; BIG = 'bigint' if PG else 'integer'; BLOB = 'bytea' if PG else 'blob'
 for q in (f'create table if not exists products(id {PK},title text,brand text,category text,price {BIG} default 0,descr text,photo text,active integer default 1)',
           f"create table if not exists requests(id {PK},uid {BIG},uname text,name text,text text,photo text,status text default 'new',reply text default '',ts {BIG})",
           f"create table if not exists orders(id {PK},uid {BIG},uname text,name text,items text,total {BIG},contact text,comment text,status text default 'new',ts {BIG})",
-          f'create table if not exists images(name text primary key,mime text,data {BLOB})'): run(q)
-if not rows('select 1 as x from products limit 1'):
+          f'create table if not exists images(name text primary key,mime text,data {BLOB})',
+          'create table if not exists meta(k text primary key,v text)'): run(q)
+if not rows("select 1 as x from meta where k='seeded'"):
+  if not rows('select 1 as x from products limit 1'):
     for t, b, c in [('Пуховик оверсайз', 'Бренд', 'Куртки'), ('Джинсы карго широкие', 'Бренд', 'Штаны'), ('Кроссовки чанки', 'Бренд', 'Обувь'), ('Кепка с вышивкой', 'Бренд', 'Аксессуары')]:
         run('insert into products(title,brand,category,price,descr,photo) values(?,?,?,0,?,?)', t, b, c, 'Пример товара: измените или удалите его в админ-панели.', '')
+  run("insert into meta(k,v) values('seeded','1')")
 
 def tg(method, **p):
     if not TOKEN: return {}
@@ -61,15 +64,16 @@ def tg(method, **p):
 def notify(uid, text):
     threading.Thread(target=tg, args=('sendMessage',), kwargs={'chat_id': uid, 'text': text}, daemon=True).start()
 
-def is_sub(uid):
+def is_sub(uid, fresh=False):
     """Подписан ли пользователь на live-канал. Бот должен быть администратором канала."""
-    if DEV or not TOKEN or uid in ADMINS or _subs.get(uid, 0) > time.time(): return True
+    if DEV or not TOKEN or (uid in ADMINS and not CHECK_ADMINS): return True
+    if not fresh and _subs.get(uid, 0) > time.time(): return True
     r = tg('getChatMember', chat_id=LIVE_CH, user_id=uid)
     if not r.get('ok'): print('Не удалось проверить подписку (добавьте бота админом в канал):', r); return True
     st = r['result'].get('status')
     if st in ('member', 'administrator', 'creator') or (st == 'restricted' and r['result'].get('is_member')):
-        _subs[uid] = time.time() + 600; return True
-    return False
+        _subs[uid] = time.time() + 60; return True
+    _subs.pop(uid, None); return False
 
 def auth(init):
     if not init: return {'id': 0, 'first_name': 'Dev', 'username': 'dev'} if DEV else None
@@ -101,10 +105,10 @@ def route(method, path, b, u):
     adm = bool(u) and (DEV or u['id'] in ADMINS)
     if path == 'init':
         if not u: raise Err('Откройте приложение из Telegram', 401)
-        return {'user': {'id': u['id'], 'name': full(u), 'username': uname(u), 'photo': u.get('photo_url', '')}, 'admin': adm, 'subscribed': is_sub(u['id']),
+        return {'user': {'id': u['id'], 'name': full(u), 'username': uname(u), 'photo': u.get('photo_url', '')}, 'admin': adm, 'subscribed': is_sub(u['id'], True),
                 'products': [prod(r) for r in rows('select * from products where active=1 order by id desc')]}
     if not u: raise Err('Откройте приложение из Telegram', 401)
-    if path == 'sub': return {'subscribed': is_sub(u['id'])}
+    if path == 'sub': return {'subscribed': is_sub(u['id'], True)}
     if path == 'my':
         return {'requests': rows('select id,text,photo,status,reply,ts from requests where uid=? order by id desc', u['id']),
                 'orders': [dict(o, items=json.loads(o['items'])) for o in rows('select id,items,total,status,ts from orders where uid=? order by id desc', u['id'])]}
