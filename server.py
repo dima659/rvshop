@@ -5,32 +5,51 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 ROOT = Path(__file__).parent; DATA = Path(os.getenv('DATA_DIR') or ROOT)
-try: DATA.mkdir(parents=True, exist_ok=True); (DATA / '.w').write_text('1')
-except OSError:
-    print(f'ВНИМАНИЕ: нет доступа к {DATA}. Данные пишутся в {ROOT / "data"} и пропадут при перезапуске. Подключите диск в Render.')
-    DATA = ROOT / 'data'; DATA.mkdir(exist_ok=True)
-UP = DATA / 'uploads'; UP.mkdir(exist_ok=True)
 TOKEN = os.getenv('BOT_TOKEN', ''); URL = (os.getenv('WEBAPP_URL') or os.getenv('RENDER_EXTERNAL_URL') or '').rstrip('/')
 ADMINS = {int(x) for x in re.split(r'[,\s]+', os.getenv('ADMIN_IDS', '')) if x.isdigit()}
 PORT = int(os.getenv('PORT', '8080')); DEV = os.getenv('DEV') == '1'
+DBURL = os.getenv('DATABASE_URL', ''); PG = DBURL.startswith('postgres')
+SECRET = hashlib.sha256(TOKEN.encode()).hexdigest()[:32]
+LIVE_CH = '@Ravoutshmotlive'; _subs = {}
 RS = {'new': 'Новая', 'work': 'В работе', 'done': 'Выполнена', 'rejected': 'Отклонена'}
 OS = {'new': 'Новый', 'work': 'В работе', 'shipped': 'Отправлен', 'done': 'Завершён', 'cancel': 'Отменён'}
 
-db = sqlite3.connect(DATA / 'shop.db', check_same_thread=False); db.row_factory = sqlite3.Row; LK = threading.Lock()
-db.executescript('''
-create table if not exists products(id integer primary key autoincrement,title,brand,category,price integer default 0,descr,photo,active integer default 1);
-create table if not exists requests(id integer primary key autoincrement,uid integer,uname,name,text,photo,status default 'new',reply default '',ts integer);
-create table if not exists orders(id integer primary key autoincrement,uid integer,uname,name,items,total integer,contact,comment,status default 'new',ts integer);''')
-if not db.execute('select 1 from products').fetchone():
-    for t, b, c in [('Пуховик оверсайз', 'Бренд', 'Куртки'), ('Джинсы карго широкие', 'Бренд', 'Штаны'), ('Кроссовки чанки', 'Бренд', 'Обувь'), ('Кепка с вышивкой', 'Бренд', 'Аксессуары')]:
-        db.execute('insert into products(title,brand,category,price,descr,photo) values(?,?,?,0,?,?)', (t, b, c, 'Пример товара: измените или удалите его в админ-панели.', ''))
-    db.commit()
-
+# База: PostgreSQL, если задан DATABASE_URL (данные хранятся вне сервера и не пропадают), иначе локальный SQLite.
+LK = threading.Lock(); conn = None
+def connect():
+    global conn, DATA
+    if PG:
+        import psycopg
+        from psycopg.rows import dict_row
+        conn = psycopg.connect(DBURL, autocommit=True, row_factory=dict_row, connect_timeout=15)
+    else:
+        try: DATA.mkdir(parents=True, exist_ok=True); (DATA / '.w').write_text('1')
+        except OSError: DATA = ROOT / 'data'; DATA.mkdir(exist_ok=True); print('ВНИМАНИЕ: DATABASE_URL не задан, данные пишутся в', DATA, 'и могут пропасть при перезапуске.')
+        conn = sqlite3.connect(DATA / 'shop.db', check_same_thread=False, isolation_level=None); conn.row_factory = sqlite3.Row
+def ex(sql, a=()):
+    if PG: sql = sql.replace('?', '%s')
+    for t in (1, 2):
+        try:
+            if conn is None: connect()
+            return conn.execute(sql, a)
+        except Exception as e:
+            if t == 2 or not PG or type(e).__name__ not in ('OperationalError', 'InterfaceError'): raise
+            connect()
 def rows(sql, *a):
-    with LK: return [dict(r) for r in db.execute(sql, a).fetchall()]
+    with LK: return [dict(r) for r in ex(sql, a).fetchall()]
 def run(sql, *a):
     with LK:
-        cur = db.execute(sql, a); db.commit(); return cur.lastrowid
+        ins = sql.lstrip().lower().startswith('insert into') and not sql.lstrip().lower().startswith('insert into images')
+        cur = ex(sql + (' returning id' if PG and ins else ''), a)
+        return (cur.fetchone()['id'] if ins else None) if PG else cur.lastrowid
+PK = 'bigserial primary key' if PG else 'integer primary key autoincrement'; BIG = 'bigint' if PG else 'integer'; BLOB = 'bytea' if PG else 'blob'
+for q in (f'create table if not exists products(id {PK},title text,brand text,category text,price {BIG} default 0,descr text,photo text,active integer default 1)',
+          f"create table if not exists requests(id {PK},uid {BIG},uname text,name text,text text,photo text,status text default 'new',reply text default '',ts {BIG})",
+          f"create table if not exists orders(id {PK},uid {BIG},uname text,name text,items text,total {BIG},contact text,comment text,status text default 'new',ts {BIG})",
+          f'create table if not exists images(name text primary key,mime text,data {BLOB})'): run(q)
+if not rows('select 1 as x from products limit 1'):
+    for t, b, c in [('Пуховик оверсайз', 'Бренд', 'Куртки'), ('Джинсы карго широкие', 'Бренд', 'Штаны'), ('Кроссовки чанки', 'Бренд', 'Обувь'), ('Кепка с вышивкой', 'Бренд', 'Аксессуары')]:
+        run('insert into products(title,brand,category,price,descr,photo) values(?,?,?,0,?,?)', t, b, c, 'Пример товара: измените или удалите его в админ-панели.', '')
 
 def tg(method, **p):
     if not TOKEN: return {}
@@ -41,6 +60,16 @@ def tg(method, **p):
         print('tg error', method, e); return {}
 def notify(uid, text):
     threading.Thread(target=tg, args=('sendMessage',), kwargs={'chat_id': uid, 'text': text}, daemon=True).start()
+
+def is_sub(uid):
+    """Подписан ли пользователь на live-канал. Бот должен быть администратором канала."""
+    if DEV or not TOKEN or uid in ADMINS or _subs.get(uid, 0) > time.time(): return True
+    r = tg('getChatMember', chat_id=LIVE_CH, user_id=uid)
+    if not r.get('ok'): print('Не удалось проверить подписку (добавьте бота админом в канал):', r); return True
+    st = r['result'].get('status')
+    if st in ('member', 'administrator', 'creator') or (st == 'restricted' and r['result'].get('is_member')):
+        _subs[uid] = time.time() + 600; return True
+    return False
 
 def auth(init):
     if not init: return {'id': 0, 'first_name': 'Dev', 'username': 'dev'} if DEV else None
@@ -59,7 +88,7 @@ def save_img(data):
     raw = base64.b64decode(m.group(2))
     if len(raw) > 6_000_000: raise ValueError('Фото слишком большое')
     name = f'{uuid.uuid4().hex}.{"jpg" if m.group(1) == "jpeg" else m.group(1)}'
-    (UP / name).write_bytes(raw); return '/uploads/' + name
+    run('insert into images(name,mime,data) values(?,?,?)', name, 'image/' + m.group(1), raw); return '/uploads/' + name
 
 def prod(r): return {'id': r['id'], 'title': r['title'], 'brand': r['brand'], 'category': r['category'], 'price': r['price'], 'desc': r['descr'], 'photo': r['photo'], 'active': r['active']}
 def uname(u): return u.get('username') or ''
@@ -72,12 +101,14 @@ def route(method, path, b, u):
     adm = bool(u) and (DEV or u['id'] in ADMINS)
     if path == 'init':
         if not u: raise Err('Откройте приложение из Telegram', 401)
-        return {'user': {'id': u['id'], 'name': full(u), 'username': uname(u), 'photo': u.get('photo_url', '')}, 'admin': adm,
+        return {'user': {'id': u['id'], 'name': full(u), 'username': uname(u), 'photo': u.get('photo_url', '')}, 'admin': adm, 'subscribed': is_sub(u['id']),
                 'products': [prod(r) for r in rows('select * from products where active=1 order by id desc')]}
     if not u: raise Err('Откройте приложение из Telegram', 401)
+    if path == 'sub': return {'subscribed': is_sub(u['id'])}
     if path == 'my':
         return {'requests': rows('select id,text,photo,status,reply,ts from requests where uid=? order by id desc', u['id']),
                 'orders': [dict(o, items=json.loads(o['items'])) for o in rows('select id,items,total,status,ts from orders where uid=? order by id desc', u['id'])]}
+    if path in ('request', 'order') and not is_sub(u['id']): raise Err('subscribe', 403)
     if path == 'request':
         text = (b.get('text') or '').strip()[:1000]; photo = save_img(b['photo']) if b.get('photo') else ''
         if not text and not photo: raise Err('Добавьте фото или описание')
@@ -128,12 +159,18 @@ class H(BaseHTTPRequestHandler):
     def handle_any(self, method):
         p = urllib.parse.urlparse(self.path).path
         try:
+            if method == 'POST' and p == f'/tg/{SECRET}' and TOKEN:
+                n = int(self.headers.get('Content-Length') or 0); up = json.loads(self.rfile.read(n) or b'{}')
+                threading.Thread(target=handle_update, args=(up,), daemon=True).start(); return self.send(200, b'{}')
             if p.startswith('/api/'):
                 n = int(self.headers.get('Content-Length') or 0)
                 if n > 12_000_000: raise Err('Слишком большой запрос', 413)
                 b = json.loads(self.rfile.read(n) or b'{}') if method == 'POST' else {}
                 return self.send(200, json.dumps(route(method, p[5:].strip('/'), b, auth(self.headers.get('X-Init-Data', ''))), ensure_ascii=False).encode())
-            f = {'/': ROOT / 'index.html', '/index.html': ROOT / 'index.html', '/art.png': ROOT / 'art.png'}.get(p) or (UP / Path(p).name if p.startswith('/uploads/') else None)
+            if p.startswith('/uploads/'):
+                r = rows('select mime,data from images where name=?', Path(p).name)
+                if r: return self.send(200, bytes(r[0]['data']), r[0]['mime'])
+            f = {'/': ROOT / 'index.html', '/index.html': ROOT / 'index.html', '/art.png': ROOT / 'art.png'}.get(p)
             if f and f.is_file():
                 ct = {'.html': 'text/html; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.webp': 'image/webp'}.get(f.suffix, 'application/octet-stream')
                 return self.send(200, f.read_bytes(), ct)
@@ -143,16 +180,21 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self): self.handle_any('GET')
     def do_POST(self): self.handle_any('POST')
 
+def handle_update(up):
+    m = up.get('message') or {}; t = (m.get('text') or '').strip(); cid = m.get('chat', {}).get('id')
+    if t.startswith('/id') and cid: tg('sendMessage', chat_id=cid, text=f'Ваш Telegram ID: {m["from"]["id"]}')
+    elif t.startswith('/start') and cid:
+        kb = {'inline_keyboard': [[{'text': 'Открыть магазин', 'web_app': {'url': URL}}]]} if URL else None
+        tg('sendMessage', chat_id=cid, text='RAVOUT SHMOT — вещи из Китая. Нажмите кнопку ниже.', **({'reply_markup': kb} if kb else {}))
+
 def bot():
-    if URL: tg('setChatMenuButton', menu_button={'type': 'web_app', 'text': 'Магазин', 'web_app': {'url': URL}})
-    off = 0
+    if URL:
+        tg('setChatMenuButton', menu_button={'type': 'web_app', 'text': 'Магазин', 'web_app': {'url': URL}})
+        tg('setWebhook', url=f'{URL}/tg/{SECRET}'); return  # вебхук: Telegram сам будит сервис, даже если он «спал»
+    tg('deleteWebhook'); off = 0
     while True:
         for up in tg('getUpdates', offset=off, timeout=25).get('result', []):
-            off = up['update_id'] + 1; m = up.get('message') or {}; t = (m.get('text') or '').strip(); cid = m.get('chat', {}).get('id')
-            if t.startswith('/id'): tg('sendMessage', chat_id=cid, text=f'Ваш Telegram ID: {m["from"]["id"]}')
-            elif t.startswith('/start') and cid:
-                kb = {'inline_keyboard': [[{'text': 'Открыть магазин', 'web_app': {'url': URL}}]]} if URL else None
-                tg('sendMessage', chat_id=cid, text='RAVOUT SHMOT — вещи из Китая. Нажмите кнопку ниже.', **({'reply_markup': kb} if kb else {}))
+            off = up['update_id'] + 1; handle_update(up)
         time.sleep(1)
 
 if __name__ == '__main__':
