@@ -21,6 +21,8 @@ img{max-width:100%;display:block}button,input,select,textarea{font:inherit;color
 textarea.in{padding:12px 14px;min-height:84px;resize:none}.in:focus{border-color:#e10600}
 .chips{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
 .ch{border:1px solid #333;border-radius:20px;padding:0 14px;min-height:38px;display:inline-flex;align-items:center;background:none;cursor:pointer;font-size:13px}
+.sdot{position:absolute;margin:-14px 0 0 12px;width:8px;height:8px;border-radius:50%;background:#e10600}
+.ov{position:fixed;inset:0;background:#000a;z-index:20}.dr{position:fixed;top:0;right:0;bottom:0;width:min(86%,320px);background:#111;border-left:1px solid #333;padding:16px;z-index:21}
 .ch.on{background:#e10600;border-color:#e10600;color:#fff}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px 12px}
 .ph{background:#1b1b1b;border-radius:14px;aspect-ratio:3/4;object-fit:cover;width:100%;display:flex;align-items:center;justify-content:center;color:#9a9a9a;font-size:11px;letter-spacing:.1em}
@@ -56,9 +58,9 @@ const money=n=>n>0?n.toLocaleString('ru-RU')+' ₽':'Цена по запрос�
 const link=u=>tg?tg.openTelegramLink(u):open(u,'_blank');
 const RS={new:'Новая',work:'В работе',done:'Выполнена',rejected:'Отклонена'},OS={new:'Новый',work:'В работе',shipped:'Отправлен',done:'Завершён',cancel:'Отменён'};
 async function api(p,b){const r=await fetch('/api/'+p,{method:b?'POST':'GET',headers:{'Content-Type':'application/json','X-Init-Data':tg?tg.initData:''},body:b?JSON.stringify(b):undefined});const j=await r.json().catch(()=>({}));if(!r.ok){if(j.error==='subscribe'){S.subd=false;gate()}throw new Error(j.error==='subscribe'?'Подпишитесь на канал, чтобы продолжить':(j.error||'Нет связи с сервером'))}return j}
-const S={me:null,products:[],cart:JSON.parse(localStorage.cart||'{}'),tab:'catalog',sub:'',cat:'Все',mode:'photo',photo:null,at:'products',edit:null,ep:'',f:{},my:{requests:[],orders:[]},adm:null};
+const S={me:null,products:[],cart:JSON.parse(localStorage.cart||'{}'),tab:'catalog',sub:'',cat:'Все',sort:'def',menu:false,mode:'photo',photo:null,at:'products',edit:null,ep:'',f:{},my:{requests:[],orders:[]},adm:null};
 const P='M12 2l3 7 7 .6-5.4 4.7 1.7 7.2L12 17.8 5.7 21.5l1.7-7.2L2 9.6 9 9z',star=z=>`<svg viewBox="0 0 24 24" width="${z}" height="${z}" aria-hidden="true"><path d="${P}" fill="#ffd400"/></svg>`;
-const ic={catalog:'<rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/>',search:'<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',cart:'<path d="M5 8h14l-1 12H6z"/><path d="M9 8a3 3 0 016 0"/>',profile:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',cam:'<path d="M3 8h4l2-3h6l2 3h4v12H3z"/><circle cx="12" cy="13" r="4"/>',chev:'<path d="M9 6l6 6-6 6"/>',x:'<path d="M6 6l12 12M18 6L6 18"/>'};
+const ic={catalog:'<rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/>',search:'<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',cart:'<path d="M5 8h14l-1 12H6z"/><path d="M9 8a3 3 0 016 0"/>',profile:'<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>',cam:'<path d="M3 8h4l2-3h6l2 3h4v12H3z"/><circle cx="12" cy="13" r="4"/>',menu:'<path d="M4 7h16M4 12h16M4 17h16"/>',chev:'<path d="M9 6l6 6-6 6"/>',x:'<path d="M6 6l12 12M18 6L6 18"/>'};
 const I=(k,z=22)=>`<svg viewBox="0 0 24 24" width="${z}" height="${z}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ic[k]}</svg>`;
 const V=(k,d='')=>esc(S.f[k]??d),cartN=()=>Object.values(S.cart).reduce((a,b)=>a+b,0),saveCart=()=>localStorage.cart=JSON.stringify(S.cart);
 const cats=()=>['Все',...new Set(['Куртки','Штаны','Обувь','Аксессуары',...S.products.map(p=>p.category).filter(Boolean)])];
@@ -70,12 +72,12 @@ const card=p=>`<button class="t" data-a="open" data-id="${p.id}">${pic(p)}<div c
 const found=q=>{const w=q.toLowerCase().split(/\s+/).filter(Boolean);return w.length?S.products.filter(p=>w.every(x=>(p.title+' '+p.brand+' '+p.category+' '+p.desc).toLowerCase().includes(x))):[]};
 const opts=(m,cur)=>Object.entries(m).map(([k,l])=>`<option value="${k}" ${k===cur?'selected':''}>${l}</option>`).join('');
 
-function catalog(){const l=S.products.filter(p=>S.cat==='Все'||p.category===S.cat);return `<div class="row sp" style="padding:16px 0 12px">${mark()}<button class="t" data-a="tab" data-t="cart" aria-label="Корзина" style="width:44px;height:44px;display:flex;align-items:center;justify-content:flex-end">${I('cart')}</button></div>
+function catalog(){const l=S.products.filter(p=>S.cat==='Все'||p.category===S.cat);if(S.sort!=='def')l.sort((a,b)=>S.sort==='asc'?a.price-b.price:b.price-a.price);return `<div class="row sp" style="padding:16px 0 12px">${mark()}<div class="row"><button class="t" data-a="menu" aria-label="Фильтры" style="width:44px;height:44px;display:flex;align-items:center;justify-content:center">${I('menu')}${S.sort!=='def'?'<i class="sdot"></i>':''}</button><button class="t" data-a="tab" data-t="cart" aria-label="Корзина" style="width:44px;height:44px;display:flex;align-items:center;justify-content:flex-end">${I('cart')}</button></div></div>
 <button class="cd row" data-a="tab" data-t="search" style="width:100%;height:48px;border-radius:24px;padding:0 14px;text-align:left;cursor:pointer"><span class="m">${I('search',20)}</span><span class="m" style="flex:1">Поиск по фото или описанию</span><span class="rd">${I('cam')}</span></button>
 <div class="chips">${cats().map(c=>`<button class="ch ${c===S.cat?'on':''}" data-a="cat" data-c="${esc(c)}">${esc(c)}</button>`).join('')}</div>
 <div class="cd row" style="overflow:hidden;min-height:132px"><div style="flex:1;padding:16px"><div class="u rd row" style="gap:6px">${star(13)}Новый дроп</div><h2 class="d" style="font-size:17px;margin:8px 0 12px">Вещи из Китая<br>напрямую</h2><button class="b s" data-a="tab" data-t="search">Найти вещь</button></div><img src="/art.png" alt="" width="132" height="132"></div>
 <div class="row sp" style="margin:18px 0 12px"><span class="d" style="font-size:13px">Каталог</span><span class="u m">${l.length} шт.</span></div>
-${l.length?`<div class="grid">${l.map(card).join('')}</div>`:'<p class="m">Здесь пока пусто. Загляните позже или оставьте заявку на вещь в поиске.</p>'}`}
+${l.length?`<div class="grid">${l.map(card).join('')}</div>`:'<p class="m">Здесь пока пусто. Загляните позже или оставьте заявку на вещь в поиске.</p>'}${S.menu?`<div class="ov" data-a="mclose"></div><aside class="dr"><div class="row sp"><h2 class="d" style="font-size:18px">Фильтры</h2><button class="t" data-a="mclose" aria-label="Закрыть" style="width:44px;height:44px;display:flex;align-items:center;justify-content:flex-end">${I('x')}</button></div><div class="u m" style="margin:14px 0 8px">Цена</div><div class="chips"><button class="ch ${S.sort==='asc'?'on':''}" data-a="sort" data-s="asc">По возрастанию ↑</button><button class="ch ${S.sort==='desc'?'on':''}" data-a="sort" data-s="desc">По убыванию ↓</button></div><button class="b s" data-a="sort" data-s="def" style="margin-top:12px">Сбросить</button></aside>`:''}`}
 
 function search(){const ph=S.mode==='photo';return head('Поиск')+`<div class="sg"><button class="${ph?'on':''}" data-a="mode" data-m="photo">По фото</button><button class="${ph?'':'on'}" data-a="mode" data-m="text">По описанию</button></div><div class="g" style="margin-top:16px">`+(ph?
 `<div class="dz"><i></i><i></i><i></i><i></i>${S.photo?`<img src="${S.photo}" alt="Ваше фото">`:`<span class="rd">${I('cam',40)}</span><div class="d" style="font-size:15px">Загрузите фото вещи</div><div class="m">Найдём такую же или похожую у поставщиков из Китая</div>`}</div>
@@ -118,7 +120,7 @@ const shrink=f=>new Promise((ok,no)=>{const im=new Image,u=URL.createObjectURL(f
 const loadMy=async()=>S.my=await api('my'),loadAdm=async()=>S.adm=await api('admin');
 const A={
 tab:async d=>{S.tab=d.t;S.sub='';S.edit=null;closeOv();render();scrollTo(0,0);if(d.t==='profile'){await loadMy();render()}},
-cat:d=>{S.cat=d.c;render()},
+cat:d=>{S.cat=d.c;render()},menu:()=>{S.menu=true;render()},mclose:()=>{S.menu=false;render()},sort:d=>{S.sort=S.sort===d.s?'def':d.s;if(d.s==='def')S.sort='def';S.menu=false;render()},
 open:d=>{const p=S.products.find(x=>x.id==d.id);ov(`${pic(p)}<div class="u m" style="margin-top:14px">${esc(p.brand)}</div><h3 class="d" style="font-size:18px;margin:6px 0">${esc(p.title)}</h3><div class="pr" style="font-size:16px">${money(p.price)}</div><p class="m">${esc(p.desc)}</p><div class="g"><button class="b" data-a="add" data-id="${p.id}">В корзину</button><button class="b o" data-a="close">Закрыть</button></div>`)},
 close:closeOv,
 add:d=>{S.cart[d.id]=(S.cart[d.id]||0)+1;saveCart();closeOv();toast('Добавлено в корзину');render()},
